@@ -1,0 +1,97 @@
+from turtle import st
+import sounddevice as sd
+import soundfile as sf
+import numpy as np
+from pathlib import Path
+import datetime
+from scipy.signal import fftconvolve
+from lib import calibration
+import matplotlib.pyplot as plt
+
+
+SAMPLE_RATE = 48000                 # Hz    - sample rate for audio playback
+F_START = 1                         # Hz    - sweep start frequency
+F_FINAL = SAMPLE_RATE // 2          # Hz    - sweep end frequency (Nyquist)
+T_SWEEP = 4                         # sec   - duration of the sine sweep
+T_IDLE  = 2                         # sec   - silence appended after the sweep
+VOLUME = 1 # gain. of the sweep
+base_folder = Path(__file__).parent.parent
+
+position = "test"
+mic_channel = 9  # Microphone channel number from UFX or from totalmix.
+
+sweep = calibration.ess_gen_farina(
+        F_START, F_FINAL, T_SWEEP, T_IDLE, SAMPLE_RATE,
+        fade_in=128, cut_zerocross=True, sweep_gain=VOLUME
+    )
+
+# List available audio devices
+print("Available audio devices:")
+print(sd.query_devices())
+
+# Set the desired device (either name or ID)
+
+device_id_or_name = "Fireface UFX+"  # Replace with the device ID or name you want to use
+print(f"Using device: {device_id_or_name}")
+
+recording = sd.playrec(
+    sweep,
+    samplerate=SAMPLE_RATE,
+    input_mapping=mic_channel,
+    output_mapping=[1],
+    device=device_id_or_name  
+)
+
+sd.wait()        
+
+# Save recording
+recording = recording.flatten()  # Flatten to 1D if it's a single channel recording
+timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+recording_folder = base_folder / "Recordings" / f"pos_{position}"
+if not recording_folder.exists():
+    recording_folder.mkdir(parents=True, exist_ok=True)  
+recording_file_path = recording_folder / f"recording_{timestamp}.wav"
+print(recording_file_path)
+sf.write(recording_file_path, recording, SAMPLE_RATE)   
+
+# Calculate and save rir
+rir = calibration.ess_parse_farina(
+    recording, sweep, T_SWEEP, T_IDLE, SAMPLE_RATE, causality=False
+)
+
+rir_folder = base_folder / "RIRs" / f"pos_{position}"
+if not rir_folder.exists():
+    rir_folder.mkdir(parents=True, exist_ok=True)   
+rir_file_path = rir_folder / f"rir_{timestamp}.wav"
+print(rir_file_path)
+sf.write(rir_file_path, rir, SAMPLE_RATE)   
+
+
+# CHECK MEASUREMENTS NOISE
+
+plt.figure(figsize=(12, 6))
+plt.subplot(2, 1, 1)
+plt.plot(recording)
+plt.title("Recorded Signal")
+plt.xlabel("Sample Index")
+plt.ylabel("Amplitude")
+plt.xlim(0, len(recording))
+plt.grid()  
+plt.subplot(2, 1, 2)
+plt.specgram(recording, Fs=SAMPLE_RATE, NFFT=1024, noverlap=512)
+plt.title("Spectrogram of Recorded Signal")
+plt.xlabel("Time [sec]")
+plt.ylabel("Frequency [Hz]")
+plt.tight_layout()
+
+
+## CHECK RIR
+
+plt.figure(figsize=(12, 6))
+plt.plot(rir)
+plt.title("Estimated RIR")
+plt.xlabel("Sample Index")
+plt.ylabel("Amplitude")
+plt.xlim(0, len(rir))
+plt.grid()
+plt.show()
