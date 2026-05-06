@@ -8,15 +8,14 @@ from lib import calibration
 import matplotlib.pyplot as plt
 
 SAMPLE_RATE = 48000                 # Hz    - sample rate for audio playback
-BLOCK_LENGTH = 2018                  # samples
+BLOCK_LENGTH = 1024                 # samples - Only used for the spectrogram visualization, not for the actual measurement. Adjust as needed for better time/frequency resolution in the spectrogram.
 F_START = 1                         # Hz    - sweep start frequency
 F_FINAL = SAMPLE_RATE // 2          # Hz    - sweep end frequency (Nyquist)
 T_SWEEP = 4                         # sec   - duration of the sine sweep
 T_IDLE  = 2                         # sec   - silence appended after the sweep
-VOLUME = 1 # chosen level to avoid clipping
+VOLUME = 1                          # to be modified if needed, gain of the sweep. Adjust based on the expected SPL at the microphones and the headroom of your audio interface to avoid clipping.
 
 base_folder = Path(__file__).parent.parent
-
 position = "test_probe"
 
 mic_channels = 6  # Number of microphones in the array
@@ -31,8 +30,7 @@ sweep = calibration.ess_gen_farina(
 print("Available audio devices:")
 print(sd.query_devices())
 
-# Set the desired device (either name or ID)
-
+# Chosen device for recording and playback
 device_id_or_name = "Fireface UFX+"  # Replace with the device ID or name you want to use
 print(f"Using device: {device_id_or_name}")
 
@@ -49,20 +47,16 @@ sd.wait()
 
 # Save the recording
 for mic_idx in range(mic_channels):
-    # include position and timestamp in filename
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-
-    # if it doen not exist create folder
     recording_folder = base_folder / "recordings" / f"pos_{position}"
     # Create the folder if it does not exist
-    
     if not recording_folder.exists():
         recording_folder.mkdir(parents=True, exist_ok=True)
 
-    mic_file_path = recording_folder / f"mic_{mic_names[mic_idx]}_{timestamp}.wav"
-    print(mic_file_path)     
+    mic_file_name = recording_folder / f"mic_{mic_names[mic_idx]}_{timestamp}.wav"
+    print(mic_file_name)     
     
-    sf.write(mic_file_path, recording[:, mic_idx], SAMPLE_RATE)
+    sf.write(mic_file_name, recording[:, mic_idx], SAMPLE_RATE)
     
     rir = calibration.ess_parse_farina(
         recording[:, mic_idx], sweep, T_SWEEP, T_IDLE, SAMPLE_RATE, causality=False
@@ -71,9 +65,9 @@ for mic_idx in range(mic_channels):
     rir_folder = base_folder / "RIRs" / f"pos_{position}"
     if not rir_folder.exists():
         rir_folder.mkdir(parents=True, exist_ok=True)   
-    rir_file_path = rir_folder / f"rir_{mic_names[mic_idx]}_{timestamp}.wav"
-    print(rir_file_path)
-    sf.write(rir_file_path, rir, SAMPLE_RATE)   
+    rir_file_name = rir_folder / f"rir_{mic_names[mic_idx]}_{timestamp}.wav"
+    print(rir_file_name)
+    sf.write(rir_file_name, rir, SAMPLE_RATE)   
 
    
 
