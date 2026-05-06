@@ -39,7 +39,7 @@ print(f"Using device: {device_id_or_name}")
 recording = sd.playrec(
     sweep,
     samplerate=SAMPLE_RATE,
-    input_mapping=list(range(31, 37)),
+    input_mapping=list(range(31, 37)), # Correspond to 6 probe cables on the first 6 channel of RME 12mic card (under the UFX+), adjust if needed
     output_mapping=[1],
     device=device_id_or_name  
 )
