@@ -65,7 +65,7 @@ for mic_idx in range(mic_channels):
     rir_folder = base_folder / "RIRs" / f"pos_{position}"
     if not rir_folder.exists():
         rir_folder.mkdir(parents=True, exist_ok=True)   
-    rir_file_name = rir_folder / f"rir_{mic_names[mic_idx]}_{timestamp}.wav"
+    rir_file_name = rir_folder / f"rir_mic_{mic_names[mic_idx]}_{timestamp}.wav"
     print(rir_file_name)
     sf.write(rir_file_name, rir, SAMPLE_RATE)   
 

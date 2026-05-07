@@ -17,7 +17,7 @@ T_IDLE  = 2                         # sec   - silence appended after the sweep
 VOLUME = 1 # gain. of the sweep
 base_folder = Path(__file__).parent.parent
 
-position = "test"
+position = "test_1mic"
 mic_channel = 9  # Microphone channel number from UFX or from totalmix.
 
 sweep = calibration.ess_gen_farina(
