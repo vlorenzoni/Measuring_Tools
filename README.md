@@ -11,7 +11,7 @@ A suite of Python scripts designed for acoustic measurements, sweep generation, 
 
 ## 📂 Repository Structure
 
-- **`Measure_noDAW/`**: Core measurement scripts and hardware interface logic[cite: 3].
+- **`Measuring/`**: Core measurement scripts and hardware interface logic[cite: 3].
 - **`Processing/`**: Tools for analyzing captured recordings and calculating RIR parameters[cite: 3].
 - **`lib/`**: Shared acoustic utilities and signal processing algorithms[cite: 3].
 - **`Recordings/` & `RIRs/`**: Local directories for data storage (configured in `.gitignore`)[cite: 3].
@@ -20,5 +20,8 @@ A suite of Python scripts designed for acoustic measurements, sweep generation, 
 
 Ensure you have Python 3.10+ installed. Install the necessary processing libraries[cite: 3]:
 
+
 ```bash
-pip install numpy scipy matplotlib sounddevice
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt

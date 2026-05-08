@@ -28,7 +28,7 @@ import scipy as sp
 
 
 def ess_gen_farina(f_start: int, f_final: int, t_sweep: float, t_idle: float,
-                   fs: int, fade_in: int = 0, cut_zerocross: bool = False
+                   fs: int, fade_in: int = 0, cut_zerocross: bool = False, sweep_gain: float = 1.0
                    ) -> Tuple[np.ndarray, np.ndarray]:
     """
     Generate a single Exponential Sine Sweep (ESS) and the inverse signal,
@@ -62,7 +62,7 @@ def ess_gen_farina(f_start: int, f_final: int, t_sweep: float, t_idle: float,
     R = float(f_final) / f_start
     C = (2 * f_final * np.log(R)) / ((f_final - f_start) * t_sweep)
     t = np.arange(0, int(fs * t_sweep)) / fs
-    sweep = np.sin(((2 * math.pi * f_start * t_sweep) / math.log(R)) * (
+    sweep = sweep_gain * np.sin(((2 * math.pi * f_start * t_sweep) / math.log(R)) * (
                    np.power(R, (t / t_sweep)) - 1))
 
     if (fade_in > 0):
