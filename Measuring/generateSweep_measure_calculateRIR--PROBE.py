@@ -4,7 +4,7 @@ import numpy as np
 from pathlib import Path
 import datetime
 from scipy.signal import fftconvolve
-from lib import sweeps_routines as swp
+from lib import sweeps_methods as swp
 import matplotlib.pyplot as plt
 
 SAMPLE_RATE = 48000                 # Hz    - sample rate for audio playback

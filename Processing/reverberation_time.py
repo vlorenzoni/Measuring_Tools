@@ -17,6 +17,9 @@ import argparse
 import numpy as np
 from scipy.signal import butter, sosfilt
 import warnings
+import tkinter as tk
+from tkinter import filedialog, messagebox
+import os
 
 # --------------------------------------------------------------------------- #
 #  Optional imports (graceful degradation)                                     #
@@ -101,7 +104,7 @@ def energy_decay_curve(h: np.ndarray) -> np.ndarray:
 #  Reverberation time via linear regression on the EDC                        #
 # --------------------------------------------------------------------------- #
 def estimate_rt(edc_db: np.ndarray, fs: float,
-                method: str = "T30") -> tuple[float, float, np.ndarray]:
+                method: str = "T20") -> tuple[float, float, np.ndarray]:
     """
     Estimate reverberation time from an EDC (in dB) using least-squares
     linear regression over the evaluation window defined by `method`.
@@ -302,32 +305,30 @@ def _plot_edc(bands, edc_list, fit_list, rt_array, fs, method, fraction):
     print("\n[INFO] EDC plot saved to reverberation_edc_plot.png")
     plt.show()
 
+def select_wav_file():
+    # Initialize tkinter and hide the main window
+    root = tk.Tk()
+    root.withdraw()
 
-# --------------------------------------------------------------------------- #
-#  Synthetic RIR generator (for demo / unit testing)                           #
-# --------------------------------------------------------------------------- #
-def generate_synthetic_rir(fs: float = 48000, rt60: float = 0.8,
-                           duration: float = 2.0) -> np.ndarray:
-    """
-    Generate a simple synthetic RIR: exponentially decaying white noise.
+    # Open the file dialog
+    file_path = filedialog.askopenfilename(
+        title="Select a WAV file",
+        filetypes=[("WAV files", "*.wav"), ("All files", "*.*")]
+    )
 
-    Parameters
-    ----------
-    fs       : sample rate in Hz
-    rt60     : target T60 in seconds
-    duration : total length in seconds
+    # Check if a file was selected
+    if not file_path:
+        print("No file selected.")
+        return None
 
-    Returns
-    -------
-    h : 1-D ndarray, normalised to peak amplitude 1.0
-    """
-    n = int(fs * duration)
-    t = np.arange(n) / fs
-    noise = np.random.default_rng(42).standard_normal(n)
-    decay = np.exp(-3.0 * np.log(10) / rt60 * t)   # -60 dB in rt60 seconds
-    h = noise * decay
-    h /= np.max(np.abs(h))
-    return h
+    # Validate file extension
+    if not file_path.lower().endswith('.wav'):
+        messagebox.showerror("Invalid File", "Please select a file with a .wav extension.")
+        print(f"Error: {file_path} is not a WAV file.")
+        return None
+
+    print(f"Selected file: {file_path}")
+    return file_path
 
 
 # --------------------------------------------------------------------------- #
@@ -363,10 +364,12 @@ def main():
         print(f"[INFO] Loaded '{args.wav}' | fs={fs} Hz | "
               f"length={len(rir)/fs:.3f} s")
     else:
-        fs = args.fs
-        print(f"[INFO] No WAV file provided — using synthetic RIR "
-              f"(T60={args.rt60} s, fs={fs} Hz)\n")
-        rir = generate_synthetic_rir(fs=fs, rt60=args.rt60)
+        selectedRIR = select_wav_file()
+        if selectedRIR:
+            rir, fs = sf.read(selectedRIR, always_2d=False)
+        else:
+            print("No valid WAV file selected.")
+            return
 
     # Filter bands to those below Nyquist
     nyq = fs / 2.0
@@ -384,5 +387,11 @@ def main():
     return result
 
 
+
+# run the code on a specified .wav file or on the synthetic RIR if no file is selecte
+ 
+
+#Example of how to run this into your script
 if __name__ == "__main__":
-    main()
+
+    main()  

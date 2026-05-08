@@ -323,5 +323,5 @@ def direct_to_reverberant(rir: np.ndarray, fs, correction: float = 0.0025) -> fl
     start = max(int(direct_idx - correction * fs), 0)
     end = int(direct_idx + correction * fs)
 
-    drr = 10 * np.log10(np.trapz(rir[start:end] ** 2) / np.trapz(rir[end + 1 :] ** 2))
+    drr = 10 * np.log10(np.trapezoid(rir[start:end] ** 2) / np.trapezoid(rir[end + 1 :] ** 2))
     return drr

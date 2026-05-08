@@ -1,6 +1,6 @@
 # %% Import libraries
-from py_octave_band import octavefilter
-from lib import acoustics, sweep
+from lib.py_octave_band import octavefilter
+from lib import acoustics
 import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
@@ -102,17 +102,22 @@ def load_measurements(folder, measurement_prefix, microphone_identifier):
 
 
 # %% Load configuration
-measurement_prefix = ["A1","A2","A3","B1","B2","B3","C1","D2"]
-microphone_identifier = ["E"]
+
+
+measurement_prefix = ["pos_test_probe"] # ["A1","A2","A3","B1","B2","B3","C1","D2"] # indicate positions here
+microphone_identifier = ["E"] # top microphone of the probe
 
 fs = 48_000
 
-# enter subfolders and display file that contain microphone_identifiers in the name
 
-current_dir = Path.cwd()
-folder_up = current_dir.parents[1]
-# folder RIR two folders up
-folder = folder_up / "RIRvisual"
+# current_dir = Path.cwd()
+# folder_up = current_dir.parents[1]
+# # folder RIR two folders up
+# folder = folder_up / "RIRvisual"
+
+folder = Path("/Users/apple/Library/CloudStorage/Dropbox/My_ESAT/Experiments/Measuring_tests/RIRs/")
+
+
 
 f_limits = [100, 8_000]
 octave_band = 1  # 1 octave
@@ -125,6 +130,8 @@ if not folder.exists():
 
 # %% Load measurements from microphone E
 measurements = load_measurements(folder,measurement_prefix,microphone_identifier)
+
+
 
 
 # %% Plot the objective parameters
@@ -162,11 +169,18 @@ for mnr,meas in enumerate(measurements):
     fig.set_size_inches(w=text_width, h=2 * text_width)
 # save the figure in folder figures f folder does not exist create it
 
-    output_dir = Path(__file__).resolve().parents[2] / "report" / "figures"
+    output_dir = Path(__file__).resolve().parents[1] / "Report" / "Figures"
     if not output_dir.exists():
         output_dir.mkdir(parents=True)
+
+    # Create the directory if it does not exist
+    output_dir_latex = Path(__file__).resolve().parents[1] / "Report" / "Latex"
+    if not os.path.exists(output_dir_latex):
+        os.makedirs(output_dir_latex)
     
-    fig.savefig(output_dir / f"pos_{meas.meas_name[mnr]}_objective_params.pgf")
+    fig.savefig(output_dir / f"pos_{meas.meas_name[mnr]}_objective_params.png", dpi=300)
+
+    fig.savefig(output_dir_latex / f"pos_{meas.meas_name[mnr]}_objective_params.pgf")
 
 
 
@@ -179,12 +193,9 @@ for mnr,meas in enumerate(measurements):
 
 # Calculate the one-number objective parameters for each measurement according to the ISO 3382-1:2009 standard.
 
-# Create the directory if it does not exist
-#output_dir = Path(__file__).resolve().parents[2] / "report" / "figures"
-# if not os.path.exists(output_dir):
-#     os.makedirs(output_dir)
 
-with open(os.path.join(output_dir, "objective_params_table.tex"), "w") as f:
+
+with open(os.path.join(output_dir_latex, "objective_params_table.tex"), "w") as f:
     f.write("\\definecolor{lightgray}{gray}{0.8}\n")
     f.write("\\begin{table*}[ht]\n")
     f.write("\\centering\n")
