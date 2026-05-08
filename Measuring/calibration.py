@@ -12,7 +12,6 @@ import matplotlib.pyplot as plt
 # This script is used to measure the latency of the whole measuring system, including the soundcard, the cables, and the microphones. To do this. hsortcut the speaked directly back into the input channel. Then play an impulsive signal and record it. By comparing the original stimulus with the recorded signal, we can calculate the latency in samples. This latency can then be used as an offset in the RIR estimation to correct for any delays in the system, ensuring that the direct sound and early reflections are accurately represented in the estimated RIR.
 
 
-
 fs = 48000  # Sample rate
 
 mic_channel = 9  # Use one single channel. Specify the number from soundcard or from Totalmix.
@@ -63,7 +62,7 @@ print(f"Using device: {device_id_or_name}")
 recording = sd.playrec(
     stimulus,
     samplerate=fs,
-    input_mapping=list(range(7, 12)),
+    input_mapping=mic_channel,
     output_mapping=[1],
     device=device_id_or_name  
 )

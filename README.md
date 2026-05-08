@@ -16,6 +16,12 @@ A suite of Python scripts designed for acoustic measurements, sweep generation, 
 - **`lib/`**: Shared acoustic utilities and signal processing algorithms[cite: 3].
 - **`Recordings/` & `RIRs/`**: Local directories for data storage (configured in `.gitignore`)[cite: 3].
 
+## Files in Measuring folder
+- **`generateSweep_measure_calculateRIR--singleMic.py/`**: Creates sweep play and record adn evaluate and stores RIR for one specified microphone.
+- **`generateSweep_measure_calculateRIR--PROBE.py`**: Creates sweep play and record adn evaluate and stores RIRs for all probe microphones.
+- **`calibration/`**: Used to evaluate the system audio delay between sending and recording the signal. Need to shortcut the system before measuring.
+
+
 ## 🛠 Setup & Requirements
 
 Ensure you have Python 3.10+ installed. Install the necessary processing libraries[cite: 3]:
