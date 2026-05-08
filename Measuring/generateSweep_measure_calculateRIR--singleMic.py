@@ -1,11 +1,10 @@
-from turtle import st
 import sounddevice as sd
 import soundfile as sf
 import numpy as np
 from pathlib import Path
 import datetime
 from scipy.signal import fftconvolve
-from lib import calibration
+from lib import sweeps_routines as swp
 import matplotlib.pyplot as plt
 
 
@@ -14,13 +13,23 @@ F_START = 1                         # Hz    - sweep start frequency
 F_FINAL = SAMPLE_RATE // 2          # Hz    - sweep end frequency (Nyquist)
 T_SWEEP = 4                         # sec   - duration of the sine sweep
 T_IDLE  = 2                         # sec   - silence appended after the sweep
-VOLUME = 1 # gain. of the sweep
+VOLUME = 1                          # int   - gain of the sweep
+
+# ENTER POSITION 
+position = "test_1mic"    # Name of the position, used for folder naming when      saving recordings and RIRs. Adjust as needed for your measurement setup.
+
+# SPECIFY MICROPHONE CHANNEL
+mic_channel = 9  # Microphone channel number from soundcard or from totalmix.
+
+# SPECIFY OFFSET
+OFFSET = 0                          # samples - integer from calibration,  to be applied to the RIR to correct for latency of the whole mesuring system -- necessary to estimate a correct direct sound and early reflections in the RIR, ONLY APPLIED causality = TRUE , default  = 0 samples.  To measure it shortcut the system and use Calibration.py routing.
+
+
+
 base_folder = Path(__file__).parent.parent
 
-position = "test_1mic"
-mic_channel = 9  # Microphone channel number from UFX or from totalmix.
-
-sweep = calibration.ess_gen_farina(
+# Generate the sweep signal
+sweep,inverse_sweep = swp.ess_gen_farina(
         F_START, F_FINAL, T_SWEEP, T_IDLE, SAMPLE_RATE,
         fade_in=128, cut_zerocross=True, sweep_gain=VOLUME
     )
@@ -30,16 +39,15 @@ print("Available audio devices:")
 print(sd.query_devices())
 
 # Set the desired device (either name or ID)
-
 device_id_or_name = "Fireface UFX+"  # Replace with the device ID or name you want to use
 print(f"Using device: {device_id_or_name}")
 
 recording = sd.playrec(
     sweep,
     samplerate=SAMPLE_RATE,
-    input_mapping=mic_channel,
+    input_mapping= mic_channel,
     output_mapping=[1],
-    device=device_id_or_name  
+    device= device_id_or_name  # to try on laptop use: (0,1)
 )
 
 sd.wait()        
@@ -55,8 +63,8 @@ print(recording_file_path)
 sf.write(recording_file_path, recording, SAMPLE_RATE)   
 
 # Calculate and save rir
-rir = calibration.ess_parse_farina(
-    recording, sweep, T_SWEEP, T_IDLE, SAMPLE_RATE, causality=False
+rir = swp.ess_parse_farina(
+    recording, inverse_sweep, T_SWEEP, T_IDLE, SAMPLE_RATE, offset=OFFSET, causality=True
 )
 
 rir_folder = base_folder / "RIRs" / f"pos_{position}"
