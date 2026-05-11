@@ -1,327 +1,367 @@
 """
-    Module which contains functions relating to the calculation of Objective
-    Room Acoustic parameters.
+acoustics.py
+===================
+Objective room acoustic parameter estimation from Room Impulse Responses (RIRs).
 
-    References
-    ----------
-    [1] M. R. Schroeder, “New Method of Measuring Reverberation Time,” The
-    Journal of the Acoustical Society of America, vol. 37, no. 3, pp. 409-412,
-    Mar. 1965
-    [2] A. Gade, “Acoustics in Halls for Speech and Music,” in Springer
-    Handbook of Acoustics, Thomas D. Rossing, Ed. New York, NY: Springer New
-    York, 2007, pp. 301-350.
+ISO 3382-1 compliant. Import and call functions directly from other scripts.
+
+Example usage
+─────────────
+    from lib.acoustics import reverberation_time
+
+    rir, fs = sf.read("my_rir.wav")
+    if rir.ndim > 1:
+        rir = rir[:, 0]
+
+    result = reverberation_time(rir, fs, method="T30", plot=True)
+    # → prints per-band RT table
+    # → shows broadband EDC plot
+    # → shows per-band EDC plot (one subplot per octave band)
+
+    # Extra ISO 3382 parameters
+    from lib.acoustics import edt, clarity, definition, center_time, direct_to_reverberant
+
+References
+──────────
+    [1] M. R. Schroeder, "New Method of Measuring Reverberation Time,"
+        JASA, vol. 37, no. 3, pp. 409-412, 1965.
+    [2] A. Gade, "Acoustics in Halls for Speech and Music," in Springer
+        Handbook of Acoustics, T. D. Rossing, Ed., 2007, pp. 301-350.
 """
 
+import warnings
 import matplotlib.pyplot as plt
 import numpy as np
-from scipy.signal import find_peaks
+from scipy.signal import butter, find_peaks, sosfilt
+
+
+# ── ISO 266 band definitions ──────────────────────────────────────────────────
+
+OCTAVE_BANDS_HZ = [63, 125, 250, 500, 1000, 2000, 4000, 8000]
+
+THIRD_OCTAVE_BANDS_HZ = [
+    50, 63, 80, 100, 125, 160, 200, 250, 315, 400,
+    500, 630, 800, 1000, 1250, 1600, 2000, 2500, 3150,
+    4000, 5000, 6300, 8000, 10000,
+]
+
+_METHOD_WINDOWS = {
+    "T20": (5.0, 25.0),
+    "T30": (5.0, 35.0),
+    "T60": (5.0, 65.0),
+}
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  Internal building blocks
+# ══════════════════════════════════════════════════════════════════════════════
 
 def mag2db(signal: np.ndarray, input_mode: str = "amplitude") -> np.ndarray:
-    """
-    Convert magnitude to decibels.
-
-    Parameters
-    ----------
-        signal: np.ndarray
-            Input array, specified as scalar or vector.
-        mode: {"amplitude", "power"}, optional
-            Express input array as either `amplitude` or
-            `power` measurement. Default input array is expressed as
-            `amplitude`.
-    Returns
-    -------
-        np.ndarray
-            Magnitude measurement expressed in decibels.
-    """
     scaling = 10 if input_mode == "power" else 20
-    return scaling * np.log10(np.abs(signal))
-
-def get_direct_path_idx(rir: np.ndarray, threshold: int = 3):
-    abs_rir = abs(rir)
-    direct_idx = abs_rir.argmax()
-
-    # Set the threshold 3dB below the maximal value
-    threshold = abs_rir[direct_idx] * 10 ** (-threshold / 20)
-    peaks = find_peaks(abs_rir, height=threshold)[0]
-
-    if len(peaks):
-        direct_idx = peaks[0]
-
-    return direct_idx
+    return scaling * np.log10(np.abs(signal) + 1e-300)
 
 
-def energy_decay_curve(rir: np.ndarray, fs: int = 1, plot: bool = False) -> np.ndarray:
+def get_direct_path_idx(rir: np.ndarray, threshold_db: float = 3.0) -> int:
     """
-    Calculate the energy decay curve from a causal input Room
-    Impulse Response (RIR) using the Schroeder inverse-integration method [1].
-
-    Parameters
-    ----------
-        rir: np.ndarray
-            The input RIR.
-        fs: int, optional
-            Sampling frequency of the input RIR in Hz. Defaults to `1`.
-        plot: bool, optional
-            If set to `True`, the energy decay curve will
-            be plotted. Defaults to `False`.
-    Returns
-    -------
-        edc: np.ndarray
-            The energy decay curve in dB.
+    Return the sample index of the direct sound using find_peaks.
+    More robust than argmax: returns the first qualifying peak rather than
+    the absolute maximum, which may be a strong early reflection.
     """
-    power = np.square(rir)
-    decay_curve = np.cumsum(power[::-1])[::-1]
-    decay_curve_db = mag2db(decay_curve, "power")
-    decay_curve_db -= decay_curve_db[0]  # Normalize
+    abs_rir    = np.abs(rir)
+    peak_amp   = abs_rir.max()
+    min_height = peak_amp * 10 ** (-threshold_db / 20.0)
+    peaks, _   = find_peaks(abs_rir, height=min_height)
+    return int(peaks[0]) if len(peaks) else int(abs_rir.argmax())
 
-    if plot:
-        time_axis = np.arange(decay_curve_db.shape[0]) / fs
-        plt.plot(time_axis, decay_curve_db)
-    return decay_curve_db
 
+def energy_decay_curve(rir: np.ndarray) -> np.ndarray:
+    """
+    Schroeder backward integration → normalised EDC in dB.
+    Zero-guard prevents log(0) on silent tails.
+    """
+    energy    = rir ** 2
+    schroeder = np.cumsum(energy[::-1])[::-1]
+    schroeder = np.maximum(schroeder, 1e-20 * schroeder[0])
+    return 10.0 * np.log10(schroeder / schroeder[0])
+
+
+def bandpass_filter(signal: np.ndarray, fc: float, fs: float,
+                    order: int = 6, fraction: int = 1) -> np.ndarray:
+    """Octave (fraction=1) or 1/3-octave (fraction=3) Butterworth bandpass."""
+    factor = 2.0 ** (1.0 / (2 * fraction))
+    fl, fh = fc / factor, fc * factor
+    nyq    = fs / 2.0
+    if fl <= 0 or fh >= nyq:
+        return np.zeros_like(signal)
+    sos = butter(order, [fl / nyq, fh / nyq], btype="bandpass", output="sos")
+    return sosfilt(sos, signal)
+
+
+def _fit_edc(edc: np.ndarray, fs: float,
+             db_start: float, db_end: float) -> tuple:
+    """OLS regression on EDC window → (rt_sec, r_value, fit_line)."""
+    n = len(edc)
+    t = np.arange(n) / fs
+
+    i_upper = int(np.argmin(np.abs(edc + db_start)))
+    i_lower = int(np.argmin(np.abs(edc + db_end)))
+
+    if i_lower <= i_upper:
+        return np.nan, np.nan, np.full(n, np.nan)
+
+    seg_t, seg_edc   = t[i_upper:i_lower], edc[i_upper:i_lower]
+    slope, intercept = np.polyfit(seg_t, seg_edc, 1)
+
+    if slope >= 0:
+        return np.nan, np.nan, np.full(n, np.nan)
+
+    rt_sec   = (-60.0 - intercept) / slope
+    seg_fit  = slope * seg_t + intercept
+    ss_res   = np.sum((seg_edc - seg_fit) ** 2)
+    ss_tot   = np.sum((seg_edc - np.mean(seg_edc)) ** 2)
+    r_value  = -np.sqrt(max(0.0, 1.0 - ss_res / max(ss_tot, 1e-30)))
+    fit_line = slope * t + intercept
+    return rt_sec, r_value, fit_line
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  Main public function
+# ══════════════════════════════════════════════════════════════════════════════
 
 def rt(
-    rir: np.ndarray,
-    fs: int,
-    db: int = 60,
-    db_start: int = 5,
-    db_end: int = 35,
-    plot: bool = False,
-) -> float:
+    rir:      np.ndarray,
+    fs:       float,
+    method:   str  = "T30",
+    bands:    list = None,
+    fraction: int  = 1,
+    plot:     bool = True,
+) -> dict:
     """
-    Calculate the Reverberation Time (T) from a causal input Room Impulse
-    Response (RIR) using the Schroeder inverse-integration method [1]. Reverberation time
-    is determined from the decay rate (dB/s), as found when fitting a
-    regression line (determined from a relevant interval) to the Energy Decay
-    Curve (EDC). The standard T is calculated by extrapolating the decay rate
-    from -5 dB to -35 dB, which is denoted as $T_{30}$.
+    Calculate reverberation time from a single-channel RIR.
+
+    Computes and (optionally) plots:
+      1. Broadband EDC with regression line — one figure
+      2. Per-band EDC with regression lines — one figure, one subplot per band
 
     Parameters
     ----------
-        rir: np.ndarray
-            The input RIR.
-        fs: int
-            Sampling frequency of the input RIR in Hz.
-        db: int
-            Reverberation time threshold.
-        db_start: int, optional
-            Sound pressure decay starting point for fitting a regression line
-            to the EDC. Defaults to `5`.
-        db_end: int, optional
-            Sound pressure decay endpoint for fitting a regression line to
-            the EDC. Defaults to `35`.
-        plot: bool, optional
-            If set to `True`, the RT calculations will be plotted. Defaults to
-            `False`.
+    rir      : 1-D room impulse response (multi-channel: first channel used)
+    fs       : sample rate in Hz
+    method   : 'T20', 'T30' (default), or 'T60'
+    bands    : centre frequencies in Hz. Default: ISO octave bands 63–8000 Hz
+    fraction : 1 = octave bands (default), 3 = 1/3-octave bands
+    plot     : if True, show both broadband and per-band plots
+
     Returns
     -------
-        rt: float
-            RT in seconds.
+    dict
+        'broadband_rt'  – broadband RT in seconds (extrapolated to −60 dB)
+        'bands_hz'      – centre frequencies used
+        'rt_seconds'    – RT per band (NaN if estimation failed)
+        'r_values'      – Pearson r per band (−1 = perfect linear decay)
+        'rt_mean'       – mean RT across all valid bands
+        'rt_mid'        – ISO 3382 mid-freq average (500 Hz + 1 kHz)
     """
-    if db != 60:
-        print("Warning: Reverberation time is usually calculated at 60 dB decay.")
-    if abs(db_start) > abs(db_end):
-        raise ValueError("Initial starting dB is larger than the final dB.")
+    method = method.upper()
+    if method not in _METHOD_WINDOWS:
+        raise ValueError(f"method must be one of {list(_METHOD_WINDOWS.keys())}")
 
-    start = get_direct_path_idx(rir)  # Start at direct sound
-    edc = energy_decay_curve(rir[(start + 1) :])
-    t = np.arange(0, edc.shape[0]) / fs
+    db_start, db_end = _METHOD_WINDOWS[method]
 
-    p1 = abs(edc + abs(db_start)).argmin()
-    p2 = abs(edc + abs(db_end)).argmin()
+    if bands is None:
+        bands = OCTAVE_BANDS_HZ
 
-    # Linear Ordinary Least Squares fit (y = mx + b)
-    X = np.vstack([t[p1:p2], np.ones((p2 - p1))]).T
-    beta_hat = np.linalg.inv(X.T @ X) @ (X.T @ edc[p1:p2])  # [m, b]
-    rt = (-abs(db) - beta_hat[1]) / beta_hat[0]
+    rir = np.asarray(rir, dtype=float)
+    if rir.ndim > 1:
+        rir = rir[:, 0]
 
+    # ── align to direct sound once ────────────────────────────────────────────
+    start       = get_direct_path_idx(rir)
+    rir_aligned = rir[start + 1:]
+
+    # ── broadband ─────────────────────────────────────────────────────────────
+    edc_broad              = energy_decay_curve(rir_aligned)
+    t_broad                = np.arange(len(edc_broad)) / fs
+    rt_broad, _, fit_broad = _fit_edc(edc_broad, fs, db_start, db_end)
+
+    # ── per band ──────────────────────────────────────────────────────────────
+    rt_list, r_list, edc_list, fit_list = [], [], [], []
+
+    for fc in bands:
+        filtered       = bandpass_filter(rir_aligned, fc, fs, fraction=fraction)
+        edc            = energy_decay_curve(filtered)
+        rv, r, fit     = _fit_edc(edc, fs, db_start, db_end)
+        rt_list.append(rv)
+        r_list.append(r)
+        edc_list.append(edc)
+        fit_list.append(fit)
+
+    rt_array = np.array(rt_list, dtype=float)
+    r_array  = np.array(r_list,  dtype=float)
+    rt_mean  = float(np.nanmean(rt_array)) if np.any(np.isfinite(rt_array)) else np.nan
+    mid_idx  = [i for i, f in enumerate(bands) if f in (500, 1000)]
+    rt_mid   = float(np.nanmean(rt_array[mid_idx])) if mid_idx else np.nan
+
+    # ── console report ────────────────────────────────────────────────────────
+    label = "Octave" if fraction == 1 else "1/3-Octave"
+    print("=" * 60)
+    print(f"  Reverberation Time ({method}) — {label} Bands")
+    print("=" * 60)
+    print(f"  {'Broadband':>16}   "
+          f"{'N/A' if not np.isfinite(rt_broad) else f'{rt_broad:.3f}':>8}")
+    print(f"  {'Centre Freq (Hz)':>16}   {'RT (s)':>8}   {'r':>7}")
+    print("  " + "─" * 42)
+    for fc, rv, r in zip(bands, rt_array, r_array):
+        rt_str = f"{rv:.3f}" if np.isfinite(rv) else "   N/A"
+        r_str  = f"{r:.4f}"  if np.isfinite(r)  else "   N/A"
+        print(f"  {fc:>16}   {rt_str:>8}   {r_str:>7}")
+    print("  " + "─" * 42)
+    print(f"  {'Mean RT (all bands)':>22}   {rt_mean:.3f} s")
+    print(f"  {'RT_mid (500 + 1 kHz)':>22}   {rt_mid:.3f} s")
+    print("=" * 60)
+
+    # ── plots ─────────────────────────────────────────────────────────────────
     if plot:
-        t_fit = (np.arange(0, np.round(rt * fs) + 5)) / fs
-        X_fit = np.vstack([t_fit, np.ones(t_fit.shape)]).T
-        y_fit = X_fit @ beta_hat
-
-        ax = plt.gca()
-        ax.plot(t, edc, color="k", label="Energy Decay Curve")
-        ax.plot(t_fit, y_fit, color="g", linestyle="--", label="Linear fit")
-
-        ax.axvline(
-            t[p1],
-            color="c",
-            linestyle="--",
-            label=f"-{abs(db_start)} dB reference point",
-        )
-        ax.axvline(
-            t[p2], color="b", linestyle="--", label=f"-{abs(db_end)} dB reference point"
-        )
-        ax.axhline(-abs(db), color="r", linestyle="--", label=f"-{abs(db)} dB")
-        ax.axvline(
-            rt,
-            color="r",
-            linestyle="--",
-            label="$T_{" + f"{abs(db_end - db_start)}" + "}$",
-        )
+        # Figure 1 – broadband
+        fig, ax = plt.subplots(num=1, figsize=(10, 4))
+        ax.plot(t_broad, edc_broad, color="k", label="EDC (broadband)")
+        if np.isfinite(rt_broad):
+            p1 = int(np.argmin(np.abs(edc_broad + db_start)))
+            p2 = int(np.argmin(np.abs(edc_broad + db_end)))
+            n_fit = min(int(np.round(rt_broad * fs)) + 5, len(t_broad))
+            ax.plot(t_broad[:n_fit], fit_broad[:n_fit], "g--", label="Linear fit")
+            ax.axvline(t_broad[p1], color="c", linestyle="--",
+                       label=f"−{db_start:.0f} dB")
+            ax.axvline(t_broad[p2], color="b", linestyle="--",
+                       label=f"−{db_end:.0f} dB")
+            ax.axhline(-60, color="r", linestyle="--", label="−60 dB")
+            ax.axvline(rt_broad, color="r", linestyle="--",
+                       label=f"{method} = {rt_broad:.2f} s")
+        ax.set_title(f"Energy Decay Curve — Broadband {method}")
+        ax.set_xlabel("Time (s)")
+        ax.set_ylabel("Level (dB)")
+        ax.set_ylim(-80, 5)
+        ax.grid(True, alpha=0.3)
         ax.legend()
-    return rt
+        plt.tight_layout()
+        
+    
 
+        # Figure 2 – per band
+        n_bands = len(bands)
+        ncols   = 4
+        nrows   = int(np.ceil(n_bands / ncols))
+        fig2, axes = plt.subplots(nrows, ncols, num=2, figsize=(16, nrows * 3.5),
+                                   constrained_layout=True)
+        axes = np.array(axes).flatten()
+        bl   = "Oct" if fraction == 1 else "1/3-Oct"
+
+        for idx, (fc, edc, fit, rv) in enumerate(
+                zip(bands, edc_list, fit_list, rt_array)):
+            ax  = axes[idx]
+            t   = np.arange(len(edc)) / fs
+            ax.plot(t, edc, color="#2196F3", lw=1.2, label="EDC")
+            if np.isfinite(rv):
+                valid = np.isfinite(fit)
+                ax.plot(t[valid], fit[valid], color="#F44336", lw=1.5, ls="--",
+                        label=f"{method} = {rv:.2f} s")
+            ax.axhline(-60, color="#888", lw=0.8, ls=":", label="−60 dB")
+            ax.set_xlim(0, t[-1])
+            ax.set_ylim(-80, 5)
+            ax.set_title(f"{fc} Hz ({bl})", fontsize=9)
+            ax.set_xlabel("Time (s)", fontsize=8)
+            ax.set_ylabel("Level (dB)", fontsize=8)
+            ax.tick_params(labelsize=7)
+            ax.legend(fontsize=7, loc="upper right")
+            ax.grid(True, alpha=0.3)
+            
+
+        for ax in axes[n_bands:]:
+            ax.set_visible(False)
+
+        fig2.suptitle(f"Energy Decay Curves per Band — {method}", fontsize=13)
+        plt.show()
+
+
+    return {
+        "broadband_rt": rt_broad,
+        "bands_hz":     bands,
+        "rt_seconds":   rt_array.tolist(),
+        "r_values":     r_array.tolist(),
+        "rt_mean":      rt_mean,
+        "rt_mid":       rt_mid,
+    }
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  Additional ISO 3382 parameters
+# ══════════════════════════════════════════════════════════════════════════════
 
 def edt(rir: np.ndarray, fs: int, plot: bool = False) -> float:
-    """
-    Calculate the Early Decay Time (EDT) of an input Room Impulse Response
-    (RIR). The EDT is the time it takes for the RIR to decay to -60 dB. The
-    decay rate is calculated using the interval from 0 dB to -10 dB, relative
-    to the direct sound.
-
-    Parameters
-    ----------
-        rir: np.ndarray
-            The input RIR.
-        fs: int
-            Sampling frequency of the input RIR in Hz.
-        plot: bool, optional
-            If set to `True`, the EDT calculations will be plotted. Defaults to
-            `False`.
-    Returns
-    -------
-        edt: float
-            The EDT in seconds.
-    """
-    return rt(rir, fs, 60, 0, 10, plot)
+    """Early Decay Time (0 to −10 dB window, extrapolated to 60 dB)."""
+    rir   = np.asarray(rir, dtype=float)
+    if rir.ndim > 1: rir = rir[:, 0]
+    start = get_direct_path_idx(rir)
+    edc   = energy_decay_curve(rir[start + 1:])
+    t     = np.arange(len(edc)) / fs
+    rv, _, fit = _fit_edc(edc, fs, 0, 10)
+    if plot:
+        fig, ax = plt.subplots(num=3, figsize=(10, 4))
+        ax.plot(t, edc, color="k", label="EDC")
+        if np.isfinite(rv):
+            n_fit = min(int(np.round(rv * fs)) + 5, len(t))
+            ax.plot(t[:n_fit], fit[:n_fit], "g--", label=f"EDT = {rv:.2f} s")
+        ax.set_title("Early Decay Time")
+        ax.set_xlabel("Time (s)"); ax.set_ylabel("Level (dB)")
+        ax.set_ylim(-80, 5); ax.grid(True, alpha=0.3); ax.legend()
+        plt.tight_layout(); plt.show()
+    return rv
 
 
-def energy_ratio(rir: np.ndarray, early: tuple, late: tuple) -> float:
-    """
-    Calculate the energy ratio between the early, and late part of the input
-    Room Impulse Response (RIR).
-
-    Parameters
-    ----------
-        rir: np.ndarray
-            The input RIR.
-        fs: int
-            Sampling frequency of the input RIR in Hz.
-        early: Tuple(int, int)
-            The start- and endpoint of the desired early reverberation
-            in number of samples.
-        late: Tuple(int, int)
-            The start- and endpoint of the desired late reverberation
-            in number of samples.
-    Returns
-    -------
-        ratio: float
-            Ratio between early and late energy.
-    """
-    power = np.square(rir)
-    early_power = np.sum(power[early[0] : early[1]])
-    late_power = np.sum(power[late[0] : late[1]])
-    return early_power / late_power
+def _energy_ratio(rir: np.ndarray, early: tuple, late: tuple) -> float:
+    p = rir ** 2
+    return np.sum(p[early[0]:early[1]]) / np.sum(p[late[0]:late[1]])
 
 
-def clarity(rir: np.ndarray, fs: int, threshold: float = 0.05) -> float:
-    """
-    Calculate the Clarity of an input Room Impulse Response (RIR). Clarity is
-    the ratio between energy in the RIR before and after 50ms relative to the
-    direct sound.
-
-    Parameters
-    ----------
-        rir: np.ndarray
-            The input RIR.
-        fs: int
-            Sampling frequency of the input RIR in Hz.
-        threshold: float, optional
-            The time threshold in seconds relative to the direct sound.
-            Defaults to 50ms.
-    Returns
-    -------
-        clarity: float
-            Clarity expressed in dB.
-    """
-    direct_idx = get_direct_path_idx(rir)
+def clarity(rir: np.ndarray, fs: int, threshold: float = 0.050) -> float:
+    """C50 (threshold=0.050 s) or C80 (threshold=0.080 s) in dB."""
+    rir = np.asarray(rir, dtype=float)
+    if rir.ndim > 1: rir = rir[:, 0]
+    direct_idx    = get_direct_path_idx(rir)
     threshold_idx = int(direct_idx + threshold * fs)
-    return 10 * np.log10(
-        energy_ratio(rir, (direct_idx, threshold_idx), (threshold_idx, -1))
+    return 10.0 * np.log10(
+        _energy_ratio(rir, (direct_idx, threshold_idx), (threshold_idx, len(rir)))
     )
 
 
 def definition(rir: np.ndarray, fs: int, threshold: float = 0.050) -> float:
-    """
-    Calculate the Definition of an input Room Impulse Response (RIR).
-    Definition describes the ratio between the early energy, and the
-    total energy in a RIR.
-
-    Parameters
-    ----------
-        rir: np.ndarray
-            The input RIR.
-        fs: int
-            Sampling frequency of the input RIR in Hz.
-        threshold: float, optional
-            The time threshold in seconds relative to the direct sound.
-            Defaults to 50ms.
-        peak_thresh: float, optional
-            Threshold to determine the direct sound peak. Defaults to 1.
-    Returns
-    -------
-        definition: float
-            Definition expressed as a ratio.
-    """
-    direct_idx = get_direct_path_idx(rir)
+    """D50 (threshold=0.050 s) or D80 (threshold=0.080 s) as a ratio 0–1."""
+    rir = np.asarray(rir, dtype=float)
+    if rir.ndim > 1: rir = rir[:, 0]
+    direct_idx    = get_direct_path_idx(rir)
     threshold_idx = int(direct_idx + threshold * fs)
-    return energy_ratio(rir, (direct_idx, threshold_idx), (direct_idx, -1))
+    return _energy_ratio(rir, (direct_idx, threshold_idx), (direct_idx, len(rir)))
 
 
 def center_time(rir: np.ndarray, fs: int) -> float:
-    """
-    Calculate the center time t_s, which describes the center of gravity
-    of the squared RIR. A low value corresponds to a clear sound, whereas
-    higher values indicate dominance of the late, reverberant energy.
-
-    Parameters
-    ----------
-        rir: np.ndarray
-            The input RIR.
-        fs: int
-            Sampling frequency of the input RIR in Hz.
-        peak_thresh: float, optional
-            Threshold to determine the direct sound peak. Defaults to 1.
-    Returns
-    -------
-        center_time: float
-            Center time in seconds.
-    """
+    """Centre time Ts in seconds."""
+    rir = np.asarray(rir, dtype=float)
+    if rir.ndim > 1: rir = rir[:, 0]
     direct_idx = get_direct_path_idx(rir)
-    t = np.arange(0, rir.shape[0] - direct_idx) / fs
-    ct = np.sum(t * rir[direct_idx:] ** 2) / np.sum(rir[direct_idx:] ** 2)
-    return ct.astype(float)
+    tail       = rir[direct_idx:]
+    t          = np.arange(len(tail)) / fs
+    return float(np.sum(t * tail ** 2) / np.sum(tail ** 2))
 
 
-# Calculate the Direct to Reverberant Ratio (DRR)
-def direct_to_reverberant(rir: np.ndarray, fs, correction: float = 0.0025) -> float:
-    """
-    Calculate the Direct to Reverberant Ratio (DRR) of an input Room Impulse
-    Response (RIR). DRR is the ratio between the energy of the direct sound,
-    and the energy of the reverberant sound.
-
-    Parameters
-    ----------
-        rir: np.ndarray
-            The input RIR.
-        fs: int
-            Sampling frequency of the input RIR in Hz.
-        correction: float, optional
-            Correction factor in seconds to account for the fact that the
-            direct sound has a certain width. Defaults to 0.0025.
-        peak_thresh: float, optional
-            Threshold to determine the direct sound peak. Defaults to 1.
-    Returns
-    -------
-        drr: float
-            DRR expressed in dB.
-    """
-    direct_idx = get_direct_path_idx(rir, 15)
-
-    start = max(int(direct_idx - correction * fs), 0)
-    end = int(direct_idx + correction * fs)
-
-    drr = 10 * np.log10(np.trapezoid(rir[start:end] ** 2) / np.trapezoid(rir[end + 1 :] ** 2))
-    return drr
+def direct_to_reverberant(rir: np.ndarray, fs: int,
+                           correction: float = 0.0025) -> float:
+    """Direct-to-Reverberant Ratio in dB."""
+    rir = np.asarray(rir, dtype=float)
+    if rir.ndim > 1: rir = rir[:, 0]
+    direct_idx = get_direct_path_idx(rir, threshold_db=15)
+    start      = max(int(direct_idx - correction * fs), 0)
+    end        = int(direct_idx + correction * fs)
+    return float(10.0 * np.log10(
+        np.trapezoid(rir[start:end] ** 2) /
+        np.trapezoid(rir[end + 1:] ** 2)
+    ))

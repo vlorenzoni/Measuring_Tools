@@ -1,6 +1,6 @@
 # %% Import libraries
 from lib.py_octave_band import octavefilter
-from lib import acoustics
+from lib import acoustics_original
 import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
@@ -32,13 +32,13 @@ class Measurement:
         Parameters are calculated for the broadband signal and for octave bands.
         """
         def calculator(rir, fs):
-            rt_20 = acoustics.rt(rir, fs, 60, db_start=5, db_end=25)
-            edt = acoustics.edt(rir, fs)
-            C80 = acoustics.clarity(rir, fs, 0.080)
-            D50 = acoustics.definition(rir, fs, 0.050)
-            Ts = acoustics.center_time(rir, fs)
+            rt_20 = acoustics_original.rt(rir, fs, 60, db_start=5, db_end=25)
+            edt = acoustics_original.edt(rir, fs)
+            C80 = acoustics_original.clarity(rir, fs, 0.080)
+            D50 = acoustics_original.definition(rir, fs, 0.050)
+            Ts = acoustics_original.center_time(rir, fs)
             E = 10 * np.log10(np.sum(rir ** 2))
-            drr = acoustics.direct_to_reverberant(rir, fs)
+            drr = acoustics_original.direct_to_reverberant(rir, fs)
             return rt_20, edt, C80, D50, Ts, E, drr
 
         broadband_params = []
@@ -98,25 +98,16 @@ def load_measurements(folder, measurement_prefix, microphone_identifier):
 
 
 
-             
-
+## USER DEFINED PARAMETERS 
 
 # %% Load configuration
 
 
-measurement_prefix = ["pos_test_probe"] # ["A1","A2","A3","B1","B2","B3","C1","D2"] # indicate positions here
+folder = Path("/Users/apple/Library/CloudStorage/Dropbox/My_ESAT/Experiments/Measuring_tests/RIRs/")
+measurement_prefix = ["pos_test_probe","pos_test_mic"] # ["A1","A2","A3","B1","B2","B3","C1","D2"] # indicate positions here
 microphone_identifier = ["E"] # top microphone of the probe
 
 fs = 48_000
-
-
-# current_dir = Path.cwd()
-# folder_up = current_dir.parents[1]
-# # folder RIR two folders up
-# folder = folder_up / "RIRvisual"
-
-folder = Path("/Users/apple/Library/CloudStorage/Dropbox/My_ESAT/Experiments/Measuring_tests/RIRs/")
-
 
 
 f_limits = [100, 8_000]
