@@ -25,7 +25,7 @@ stimulus[peak_position] = 1 # Pulse at 1 second  at 48 kHz
 
 
 plt.plot(stimulus)
-plt.show()
+
 
 
 
@@ -49,29 +49,8 @@ recording = sd.playrec(
 
 sd.wait()        
 
-
-
-# List available audio devices
-print("Available audio devices:")
-print(sd.query_devices())
-
-# Set the desired device (either name or ID)
-device_id_or_name = "Fireface UFX+"  # Replace with the device ID or name you want to use
-print(f"Using device: {device_id_or_name}")
-
-recording = sd.playrec(
-    stimulus,
-    samplerate=fs,
-    input_mapping=mic_channel,
-    output_mapping=[1],
-    device=device_id_or_name  
-)
-
-recording = recording.flatten()  
-sd.wait()        
-    # Generate filename and save individual microphone channels
-
 recording_folder = base_folder / "Calibration"
+
 if not recording_folder.exists():
     recording_folder.mkdir(parents=True, exist_ok=True)
 
@@ -80,18 +59,23 @@ if not recording_folder.exists():
 timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
 # Create the folder if it does not exist
 
-recording_folder
+
 #add time stamp to file name
 mic_file_path = recording_folder / f"mic_{mic_channel}_{timestamp}.wav"
+
 print(mic_file_path)
 sf.write(mic_file_path, recording, fs)
-#display full filename with folder
 
 
 original_pulse_position = peak_position
 recording_delay_samples = np.argmax(recording)  # Find the index of the maximum value in the recording
 
-offset_samples = recording_delay_samples - original_pulse_position
-print(f"Estimated latency (offset) in samples: {offset_samples}")
 
+
+offset_samples = recording_delay_samples - original_pulse_position
+print(f"Stimulus peak position - samples: {peak_position}")
+print(f"Measured peak - samples: {recording_delay_samples}")
+print(f"Estimated latency (offset) in samples: {offset_samples}")
+plt.plot(recording)
+plt.show()
 

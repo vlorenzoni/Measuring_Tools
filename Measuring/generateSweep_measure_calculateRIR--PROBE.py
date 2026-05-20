@@ -6,16 +6,17 @@ import datetime
 from scipy.signal import fftconvolve
 from lib import sweeps_methods as swp
 import matplotlib.pyplot as plt
+from lib.measurement_quality import check_recording, check_rir
+
 
 SAMPLE_RATE = 48000                 # Hz    - sample rate for audio playback
 BLOCK_LENGTH = 1024                 # samples - Only used for the spectrogram visualization, not for the actual measurement. Adjust as needed for better time/frequency resolution in the spectrogram.
 F_START = 1                         # Hz    - sweep start frequency
 F_FINAL = SAMPLE_RATE // 2          # Hz    - sweep end frequency (Nyquist)
-T_SWEEP = 4                         # sec   - duration of the sine sweep
-T_IDLE  = 2                         # sec   - silence appended after the sweep
-VOLUME = 0.8                        # Linear gain for the sweep signal (0.0 to 1.0)
-OFFSET = 0                          # samples - integer from calibration,  to be applied to the RIR to correct for latency of the whole mesuring system -- ONLY APPLIED IF THE CASUALITY PARAMETER IN THE RIR ESTIMATION FUNCTION IS SET TO TRUE, IF SET TO FALSE, THE RIR WILL BE ESTIMATED WITHOUT ANY TIME SHIFT AND  OFFSET, DEFAULT OFFSET  = 0 samples
-
+T_SWEEP = 15                         # sec   - duration of the sine sweep - the longer the less noise
+T_IDLE  = 5                         # sec   - silence appended after the sweep - to be more than double RT
+VOLUME = 1                        # Linear gain for the sweep signal (0.0 to 1.0)
+OFFSET = 9311                       # samples - MEASURED FROM CALIBRATION,  to be applied to the RIR to correct for latency of the whole mesuring system -- ONLY APPLIED IF THE CASUALITY PARAMETER IN THE RIR ESTIMATION FUNCTION IS SET TO TRUE, IF SET TO FALSE, THE RIR WILL BE ESTIMATED WITHOUT ANY TIME SHIFT AND  OFFSET, DEFAULT OFFSET  = 0 samples
 
 base_folder = Path(__file__).parent.parent
 position = "test_probe"
@@ -61,14 +62,20 @@ for mic_idx in range(mic_channels):
     sf.write(mic_file_name, recording[:, mic_idx], SAMPLE_RATE)
     
     rir = swp.ess_parse_farina(
-        recording[:, mic_idx], inverse, T_SWEEP, T_IDLE, SAMPLE_RATE, offset=OFFSET, causality=False
+        recording[:, mic_idx], inverse, T_SWEEP, T_IDLE, SAMPLE_RATE, offset=OFFSET, causality=True
     )
+
+    check_recording(recording[:, 0], sweep, SAMPLE_RATE, T_SWEEP, T_IDLE, mic_name="A")
 
     rir_folder = base_folder / "RIRs" / f"pos_{position}"
     if not rir_folder.exists():
         rir_folder.mkdir(parents=True, exist_ok=True)   
     rir_file_name = rir_folder / f"rir_mic_{mic_names[mic_idx]}_{timestamp}.wav"
     print(rir_file_name)
+
+
+    check_rir(rir, SAMPLE_RATE, mic_name="A")
+
     sf.write(rir_file_name, rir, SAMPLE_RATE)   
 
    
@@ -85,7 +92,7 @@ plt.xlim(0, len(recording))
 plt.grid()  
 plt.subplot(2, 1, 2)
 plt.specgram(recording[:, mic_idx], Fs=SAMPLE_RATE, NFFT=1024, noverlap=512)
-plt.title("Spectrogram of Recorded Signal")
+plt.title(f"Spectrogram of Recorded Signal in probe Mic: {mic_idx}" )
 plt.xlabel("Time [sec]")
 plt.ylabel("Frequency [Hz]")
 plt.tight_layout()

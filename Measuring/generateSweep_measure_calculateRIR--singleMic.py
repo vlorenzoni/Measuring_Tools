@@ -6,13 +6,14 @@ import datetime
 from scipy.signal import fftconvolve
 from lib import sweeps_methods as swp
 import matplotlib.pyplot as plt
+from lib.measurement_quality import check_folder
 
 
 SAMPLE_RATE = 48000                 # Hz    - sample rate for audio playback
 F_START = 1                         # Hz    - sweep start frequency
 F_FINAL = SAMPLE_RATE // 2          # Hz    - sweep end frequency (Nyquist)
 T_SWEEP = 4                         # sec   - duration of the sine sweep
-T_IDLE  = 2                         # sec   - silence appended after the sweep
+T_IDLE  = 3                         # sec   - silence appended after the sweep
 VOLUME = 1                          # int   - gain of the sweep
 
 # ENTER POSITION 
@@ -22,7 +23,7 @@ position = "test_1mic"    # Name of the position, used for folder naming when   
 mic_channel = 9  # Microphone channel number from soundcard or from totalmix.
 
 # SPECIFY OFFSET
-OFFSET = 0                          # samples - integer from calibration,  to be applied to the RIR to correct for latency of the whole mesuring system -- necessary to estimate a correct direct sound and early reflections in the RIR, ONLY APPLIED causality = TRUE , default  = 0 samples.  To measure it shortcut the system and use Calibration.py routing.
+OFFSET = 9309                          # samples - MEASURED INTEGER FROM CALIBRATION ,  to be applied to the RIR to correct for latency of the whole mesuring system -- necessary to estimate a correct direct sound and early reflections in the RIR, ONLY APPLIED causality = TRUE , default  = 0 samples.  To measure it shortcut the system and use Calibration.py routing.
 
 
 
@@ -66,6 +67,7 @@ sf.write(recording_file_path, recording, SAMPLE_RATE)
 rir = swp.ess_parse_farina(
     recording, inverse_sweep, T_SWEEP, T_IDLE, SAMPLE_RATE, offset=OFFSET, causality=True
 )
+
 
 rir_folder = base_folder / "RIRs" / f"pos_{position}"
 if not rir_folder.exists():
