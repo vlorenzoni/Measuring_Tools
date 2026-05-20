@@ -31,3 +31,4 @@ except (NameError, FileNotFoundError, TypeError):
 
 rir,fs = sf.read(rir_file)  # Read the RIR from the file
 T30 = rt(rir=rir, fs=fs, method="T30", plot=True)
+
