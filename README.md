@@ -1,4 +1,4 @@
-# Measuring_Library
+# Measuring_Scripts
 
 A suite of Python scripts designed for acoustic measurements, sweep generation, and Room Impulse Response (RIR) analysis. This repository provides a standalone workflow for capturing and processing acoustic data without requiring a Digital Audio Workstation (DAW).
 
