@@ -6,7 +6,7 @@ import datetime
 from scipy.signal import fftconvolve
 from lib import sweeps_methods as swp
 import matplotlib.pyplot as plt
-from lib.measurement_quality import check_folder
+from lib.measurement_quality import check_recording, check_rir
 
 
 SAMPLE_RATE = 48000                 # Hz    - sample rate for audio playback
@@ -61,7 +61,7 @@ if not recording_folder.exists():
     recording_folder.mkdir(parents=True, exist_ok=True)  
 recording_file_path = recording_folder / f"recording_{timestamp}.wav"
 print(recording_file_path)
-sf.write(recording_file_path, recording, SAMPLE_RATE)   
+sf.write(recording_file_path, recording.astype(np.float32), SAMPLE_RATE)   
 
 # Calculate and save rir
 rir = swp.ess_parse_farina(
@@ -74,7 +74,7 @@ if not rir_folder.exists():
     rir_folder.mkdir(parents=True, exist_ok=True)   
 rir_file_path = rir_folder / f"rir_{timestamp}.wav"
 print(rir_file_path)
-sf.write(rir_file_path, rir, SAMPLE_RATE)   
+sf.write(rir_file_path, rir.astype(np.float32), SAMPLE_RATE)   
 
 
 # CHECK MEASUREMENTS NOISE
@@ -105,3 +105,7 @@ plt.ylabel("Amplitude")
 plt.xlim(0, len(rir))
 plt.grid()
 plt.show()
+
+## Enable quality checks
+check_recording(recording, sweep, SAMPLE_RATE, T_SWEEP, T_IDLE, mic_name="mic")
+check_rir(rir, SAMPLE_RATE, mic_name="mic")  

@@ -1,6 +1,7 @@
 import sounddevice as sd
 import soundfile as sf
 import numpy as np
+import math
 from pathlib import Path
 import datetime
 from lib import sweeps_methods as swp
@@ -30,38 +31,54 @@ RT60_ESTIMATE = 1.0                 # sec - adjust before every session, sweep p
 #
 #   Both are derived from the same RT60_ESTIMATE so they are always
 #   internally consistent. Never set them independently.
+#   math.ceil ensures integer seconds are always passed to ess_gen_farina.
 #
 #   Total measurement time = (N_AVERAGES + 1) * (T_SWEEP + T_IDLE)
-#   e.g. RT60=1.0 s → T_SWEEP=3 s, T_IDLE=3 s, N=6 → 7 * 6 = 42 s
+#   e.g. RT60=1.0 s → T_SWEEP=3 s, T_IDLE=3 s, N=5 → 6 * 6 = 36 s
 
-T_SWEEP = max(2.0 * RT60_ESTIMATE, 3.0)   # sec  — shorter OK because averaging compensates for SNR
-T_IDLE  = max(RT60_ESTIMATE + 1.0, 3.0)   # sec  — silence after sweep: must be > RT60. Here fixed to RT60 + 1 sec.
+T_SWEEP = math.ceil(max(2.0 * RT60_ESTIMATE, 3.0))   # sec — ceil: always rounds up, safe for ess_gen_farina
+T_IDLE  = math.ceil(max(RT60_ESTIMATE + 1.0, 3.0))   # sec — ceil: never shorter than intended
 
 SAMPLE_RATE = 48000                 # Hz   - must match your audio interface
 F_START     = 20                    # Hz   - practical lower limit for speakers
 F_FINAL     = 22000                 # Hz   - slightly below Nyquist to avoid ADC filter ringing
 VOLUME      = 0.89                  # gain - ~-1 dBFS, leaves headroom to avoid clipping
 
-N_AVERAGES           = 6            # number of useful repetitions to average.
+N_AVERAGES           = 5            # number of USEFUL repetitions to average.
+                                    # Total sweeps played = N_AVERAGES + 1 (the +1 is a mandatory
+                                    # latency-absorbing sweep that is always discarded).
+                                    # So N_AVERAGES=5 → 6 sweeps played, 5 averaged.
                                     # SNR gain = 10*log10(N):
                                     #   4  →  +6.0 dB
-                                    #   6  →  +7.8 dB
+                                    #   5  →  +7.0 dB
                                     #   8  →  +9.0 dB
                                     #   16 → +12.0 dB
                                     # Increase in noisy/non-stationary environments.
 MIN_CLEAN            = 3            # minimum clean sweeps required after rejection —
                                     # raises RuntimeError if fewer survive, forcing you
                                     # to fix the noise source or increase N_AVERAGES.
-OUTLIER_THRESHOLD_DB = 3.0          # dB  - global: repetitions whose total energy deviates
+OUTLIER_THRESHOLD_DB = 2.0          # dB  - global: repetitions whose total energy deviates
                                     #       more than this from the median are discarded.
-                                    #       Catches broadly noisy sweeps (sustained HVAC burst etc).
-LOCAL_TRANSIENT_DB   = 10.0         # dB  - local: peak window energy in the idle (silence) portion
-                                    #       above the noise floor of that same idle section.
-                                    #       Catches short transients (door slam, footstep) that do
-                                    #       not move global energy enough for stage 1 to catch.
-                                    #       Checked on idle only — sweep portion has natural spectral
-                                    #       energy variation that would trigger false positives.
+                                    #       Tighter than 3 dB because noise during the sweep
+                                    #       smears across the entire RIR after deconvolution.
+                                    #       This is the primary defence against sweep contamination.
+LOCAL_TRANSIENT_DB   = 10.0         # dB  - local: peak window energy above the local median,
+                                    #       checked on the IDLE (silence) portion ONLY.
+                                    #       The sweep portion cannot use a local median reference
+                                    #       because the ESS spectral tilt means low-frequency
+                                    #       windows always have far more energy than high-frequency
+                                    #       ones — the local median is not flat and any threshold
+                                    #       produces false positives on perfectly clean sweeps.
+                                    #       Sweep contamination is caught by the tighter global check.
+                                    #       Idle transients only corrupt the RIR tail; direct sound
+                                    #       and early reflections are unaffected.
 LOCAL_WINDOW_SEC     = 0.5          # sec - sliding window length for local transient check.
+IDLE_NOISE_LEVEL     = 1e-5         # gain - noise injected into idle silence (-100 dBFS) to prevent
+                                    #        DAC relay clicks on the RME Fireface (and similar interfaces)
+                                    #        that activate a mute relay after ~1-2 s of silence.
+                                    #        Level is well below the microphone noise floor and has
+                                    #        negligible effect on the RIR noise floor after deconvolution.
+                                    #        Set to 0.0 to disable if your interface does not have this issue.
 
 
 # ENTER POSITION
@@ -85,18 +102,38 @@ sweep, inverse_sweep = swp.ess_gen_farina(
         fade_in=128, cut_zerocross=True, sweep_gain=VOLUME
     )
 
-period_len  = len(sweep)                        # samples per sweep+idle period
-sweep_len   = int(T_SWEEP * SAMPLE_RATE)        # samples of active sweep only
-idle_len    = period_len - sweep_len            # samples of silence only
+period_len = len(sweep)                         # samples per sweep+idle period
+# Derive sweep_len from period_len and T_IDLE rather than from T_SWEEP directly.
+# ess_gen_farina with cut_zerocross=True may produce a sweep slightly shorter
+# than T_SWEEP * SAMPLE_RATE, so computing from the other end is exact.
+idle_len   = int(T_IDLE * SAMPLE_RATE)          # silence samples — T_IDLE is an integer, exact
+sweep_len  = period_len - idle_len              # actual sweep samples as generated
 
-# Build the full playback signal: (N_AVERAGES + 1) repetitions.
-# The +1 discarded first sweep absorbs the I/O latency of the audio interface,
-# guaranteeing all N_AVERAGES useful slices are sample-accurately aligned.
-playback = np.tile(sweep, N_AVERAGES + 1)
+# ---------------------------------------------------------------------------
+# Playback: (N_AVERAGES + 1) repetitions in one continuous stream.
+# Sweep 0 is discarded — it absorbs the audio interface I/O latency so that
+# all N_AVERAGES useful slices are sample-accurately aligned to each other.
+# Total sweeps played = N_AVERAGES + 1 = 6 (5 useful + 1 latency absorber).
+# ---------------------------------------------------------------------------
+# Build playback explicitly rather than np.tile so we can inject idle noise.
+# Idle noise (-100 dBFS) prevents DAC relay clicks on interfaces (e.g. RME Fireface)
+# that activate a mute/protection relay after ~1-2 s of silence.
+n_periods = N_AVERAGES + 1
+playback  = np.zeros(n_periods * period_len)
+for _i in range(n_periods):
+    playback[_i * period_len : (_i + 1) * period_len] = sweep
 
-total_sec = (N_AVERAGES + 1) * period_len / SAMPLE_RATE
+if IDLE_NOISE_LEVEL > 0:
+    rng = np.random.default_rng(seed=0)   # fixed seed: reproducible, not correlated sweep-to-sweep
+    for _i in range(n_periods):
+        idle_start = _i * period_len + sweep_len
+        idle_end   = (_i + 1) * period_len
+        playback[idle_start:idle_end] += IDLE_NOISE_LEVEL * rng.standard_normal(idle_end - idle_start)
+
+total_sec = n_periods * period_len / SAMPLE_RATE
 print(f"Measurement parameters:")
-print(f"  T_SWEEP={T_SWEEP:.1f} s, T_IDLE={T_IDLE:.1f} s, N_AVERAGES={N_AVERAGES}")
+print(f"  T_SWEEP={T_SWEEP} s, T_IDLE={T_IDLE} s, N_AVERAGES={N_AVERAGES}")
+print(f"  Sweeps played: {N_AVERAGES + 1} (1 latency absorber + {N_AVERAGES} useful)")
 print(f"  Total recording duration: {total_sec:.1f} s  ({total_sec/60:.1f} min)")
 
 # ---------------------------------------------------------------------------
@@ -124,11 +161,11 @@ sd.wait()
 recording_raw = recording_raw.flatten()
 
 # ---------------------------------------------------------------------------
-# Slice into individual repetitions, discard first (latency absorption),
-# reject outliers, average in the raw domain BEFORE deconvolution
+# Slice into N_AVERAGES periods, discarding sweep 0 (latency absorber).
+# Each slice layout is exactly [sweep | idle] as expected by ess_parse_farina.
 # ---------------------------------------------------------------------------
 slices = []
-for i in range(1, N_AVERAGES + 1):              # skip i=0 (latency sweep)
+for i in range(1, N_AVERAGES + 1):              # i=0 is the latency absorber, skip it
     start = i * period_len
     chunk = recording_raw[start : start + period_len]
     if len(chunk) < period_len:                 # guard: recording ended early (OS scheduling)
@@ -144,40 +181,53 @@ if len(slices) < MIN_CLEAN:
 
 # ---------------------------------------------------------------------------
 # Two-stage outlier rejection
-#   Stage 1 — global energy of the full period  : catches broadly contaminated
-#              sweeps (sustained HVAC burst, loud background noise)
-#   Stage 2 — local sliding-window on the IDLE  : catches short transients
-#              (door slam, footstep) that do not move global energy enough
-#              for stage 1. Checked on idle only — the sweep portion has
-#              natural spectral energy variation that causes false positives.
+#   Stage 1 — global energy of the full period:
+#              catches broadly contaminated sweeps (sustained HVAC, loud noise).
+#              Threshold is tight (2 dB) because sweep contamination smears
+#              across the entire RIR after deconvolution.
+#
+#   Stage 2 — local sliding-window on IDLE portion only:
+#              catches short transients (door slam, footstep) that do not move
+#              global energy enough for Stage 1. Idle-only because the ESS
+#              spectral tilt makes local median an invalid reference on the
+#              sweep portion — it always fires false positives on clean sweeps.
+#              Idle transients only corrupt the RIR tail, not direct sound.
 # ---------------------------------------------------------------------------
 window_len = int(LOCAL_WINDOW_SEC * SAMPLE_RATE)
 energies   = np.array([np.sum(s ** 2) for s in slices])
 median_e   = np.median(energies)
 
+# Print raw energies first so the user can diagnose threshold issues
+# without having to add debug prints manually.
+print("  Per-sweep energies (relative to median):")
+_energies_tmp = np.array([np.sum(s ** 2) for s in slices])
+_med_tmp      = np.median(_energies_tmp)
+for _si, _e in enumerate(_energies_tmp):
+    print(f"    Sweep {_si+1}: {10*np.log10(_e/_med_tmp):+.2f} dB  (threshold ±{OUTLIER_THRESHOLD_DB} dB)")
+
 clean_slices  = []
-rejection_log = []          # one entry per sweep, for the diagnostic plot
+rejection_log = []          # one entry per sweep, for the diagnostic plots
 
 for i, (s, e) in enumerate(zip(slices, energies)):
     global_dev_db = 10 * np.log10(e / median_e)
 
-    # Stage 1: global energy
+    # Stage 1: global energy — primary defence for sweep contamination
     if abs(global_dev_db) >= OUTLIER_THRESHOLD_DB:
         rejection_log.append((i + 1, global_dev_db, "REJECTED – global energy"))
         continue
 
-    # Stage 2: sliding-window local transient check on idle portion only
-    idle_portion = s[sweep_len:]                # silence section only
+    # Stage 2: local transient in IDLE portion only
+    idle_portion = s[sweep_len:]
     local_e = np.array([
         np.sum(idle_portion[j : j + window_len] ** 2)
         for j in range(0, len(idle_portion) - window_len, window_len // 2)
     ])
     if len(local_e) > 0:
-        noise_floor  = np.median(local_e)
-        local_peak_db = 10 * np.log10((local_e.max() / (noise_floor + 1e-30)) + 1e-30)
-        if local_peak_db > LOCAL_TRANSIENT_DB:
+        idle_peak_db = float((10 * np.log10(local_e / (np.median(local_e) + 1e-30) + 1e-30)).max())
+        if idle_peak_db > LOCAL_TRANSIENT_DB:
             rejection_log.append((i + 1, global_dev_db,
-                                  f"REJECTED – local transient {local_peak_db:.1f} dB in idle"))
+                                  f"REJECTED – transient in IDLE ({idle_peak_db:.1f} dB) "
+                                  f"— corrupts RIR tail only"))
             continue
 
     clean_slices.append(s)
@@ -199,7 +249,7 @@ if len(clean_slices) < MIN_CLEAN:
     )
 
 # Average raw recordings, THEN deconvolve once — never average RIRs directly
-averaged_recording = np.mean(clean_slices, axis=0)
+averaged_recording = np.mean(clean_slices, axis=0)  # clean slices only — used for RIR
 
 # ---------------------------------------------------------------------------
 # Save the averaged raw recording
@@ -226,43 +276,55 @@ print(rir_file_path)
 sf.write(rir_file_path, rir, SAMPLE_RATE)
 
 # ---------------------------------------------------------------------------
-# Diagnostics: show the averaged recording + per-slice energies
+# Diagnostics — Figure 1: per-repetition energy bar chart
 # ---------------------------------------------------------------------------
 bar_colors = [
     "red" if "REJECTED" in status else "steelblue"
     for _, _, status in rejection_log
 ]
 
-plt.figure(figsize=(12, 8))
-
-plt.subplot(3, 1, 1)
+plt.figure(figsize=(12, 4))
 plt.bar(range(1, len(rejection_log) + 1), 10 * np.log10(energies / median_e), color=bar_colors)
 plt.axhline(0, color="k", linewidth=0.8)
-plt.axhline( OUTLIER_THRESHOLD_DB, color="r", linestyle="--", linewidth=0.8, label=f"±{OUTLIER_THRESHOLD_DB} dB global threshold")
+plt.axhline( OUTLIER_THRESHOLD_DB, color="r", linestyle="--", linewidth=0.8,
+             label=f"±{OUTLIER_THRESHOLD_DB} dB global threshold")
 plt.axhline(-OUTLIER_THRESHOLD_DB, color="r", linestyle="--", linewidth=0.8)
 plt.title("Per-repetition energy deviation from median (red = rejected)")
 plt.xlabel("Repetition #")
 plt.ylabel("ΔEnergy (dB)")
+plt.xticks(range(1, len(rejection_log) + 1))
 plt.legend()
 plt.grid()
-
-plt.subplot(3, 1, 2)
-plt.plot(averaged_recording)
-plt.title(f"Averaged Recording ({len(clean_slices)} repetitions)")
-plt.xlabel("Sample Index")
-plt.ylabel("Amplitude")
-plt.xlim(0, len(averaged_recording))
-plt.grid()
-
-plt.subplot(3, 1, 3)
-plt.specgram(averaged_recording, Fs=SAMPLE_RATE, NFFT=1024, noverlap=512)
-plt.title("Spectrogram of Averaged Recording")
-plt.xlabel("Time [sec]")
-plt.ylabel("Frequency [Hz]")
 plt.tight_layout()
 
 # ---------------------------------------------------------------------------
-# RIR plot
+# Diagnostics — Figure 2: per-repetition spectrograms
+# Each sweep shown individually so noise events are visible before averaging
+# hides them. Rejected sweeps have a red title, clean ones green.
+# A vertical dashed line marks the sweep/idle boundary in each panel.
+# ---------------------------------------------------------------------------
+n_slices   = len(slices)
+fig, axes  = plt.subplots(n_slices, 1, figsize=(12, 2 * n_slices), sharex=True)
+if n_slices == 1:
+    axes = [axes]   # ensure iterable when only one slice
+
+sweep_boundary_sec = sweep_len / SAMPLE_RATE
+
+for i, (s, (sweep_n, dev, status)) in enumerate(zip(slices, rejection_log)):
+    axes[i].specgram(s, Fs=SAMPLE_RATE, NFFT=1024, noverlap=512)
+    axes[i].axvline(sweep_boundary_sec, color="white", linestyle="--",
+                    linewidth=0.8, label="sweep/idle boundary")
+    title_color = "red" if "REJECTED" in status else "green"
+    axes[i].set_title(f"Sweep {sweep_n}: {status}  (ΔE = {dev:+.1f} dB)",
+                      color=title_color, fontsize=9)
+    axes[i].set_ylabel("Hz", fontsize=8)
+
+axes[-1].set_xlabel("Time [sec]")
+plt.suptitle("Per-repetition spectrograms  |  red title = rejected", fontsize=11, y=1.002)
+plt.tight_layout()
+
+# ---------------------------------------------------------------------------
+# Diagnostics — Figure 3: estimated RIR
 # ---------------------------------------------------------------------------
 plt.figure(figsize=(12, 4))
 plt.plot(rir)
@@ -271,4 +333,6 @@ plt.xlabel("Sample Index")
 plt.ylabel("Amplitude")
 plt.xlim(0, len(rir))
 plt.grid()
+plt.tight_layout()
+
 plt.show()
